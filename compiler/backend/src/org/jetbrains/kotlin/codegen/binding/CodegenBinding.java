@@ -24,7 +24,6 @@ import org.jetbrains.kotlin.codegen.SamType;
 import org.jetbrains.kotlin.codegen.state.GenerationState;
 import org.jetbrains.kotlin.codegen.when.WhenByEnumsMapping;
 import org.jetbrains.kotlin.descriptors.*;
-import org.jetbrains.kotlin.fileClasses.JvmFileClassesProvider;
 import org.jetbrains.kotlin.name.FqName;
 import org.jetbrains.kotlin.psi.*;
 import org.jetbrains.kotlin.psi.psiUtil.PsiUtilsKt;
@@ -49,7 +48,7 @@ public class CodegenBinding {
 
     public static final WritableSlice<ClassDescriptor, Boolean> ENUM_ENTRY_CLASS_NEED_SUBCLASS = Slices.createSimpleSetSlice();
 
-    public static final WritableSlice<ClassDescriptor, Collection<ClassDescriptor>> INNER_CLASSES = Slices.createSimpleSlice();
+    private static final WritableSlice<ClassDescriptor, Collection<ClassDescriptor>> INNER_CLASSES = Slices.createSimpleSlice();
 
     public static final WritableSlice<KtExpression, SamType> SAM_VALUE = Slices.createSimpleSlice();
 
@@ -60,16 +59,15 @@ public class CodegenBinding {
     public static final WritableSlice<String, List<WhenByEnumsMapping>> MAPPINGS_FOR_WHENS_BY_ENUM_IN_CLASS_FILE =
             Slices.createSimpleSlice();
 
-    public static final WritableSlice<VariableDescriptor, VariableDescriptor> LOCAL_VARIABLE_DELEGATE =
-            Slices.createSimpleSlice();
-
-    public static final WritableSlice<VariableDescriptor, VariableDescriptor> LOCAL_VARIABLE_PROPERTY_METADATA =
-            Slices.createSimpleSlice();
-
     public static final WritableSlice<FunctionDescriptor, FunctionDescriptor> SUSPEND_FUNCTION_TO_JVM_VIEW =
             Slices.createSimpleSlice();
 
     public static final WritableSlice<ValueParameterDescriptor, ValueParameterDescriptor> PARAMETER_SYNONYM =
+            Slices.createSimpleSlice();
+
+    public static final WritableSlice<Type, List<VariableDescriptorWithAccessors>> DELEGATED_PROPERTIES =
+            Slices.createSimpleSlice();
+    public static final WritableSlice<VariableDescriptorWithAccessors, Type> DELEGATED_PROPERTY_METADATA_OWNER =
             Slices.createSimpleSlice();
 
     static {
@@ -150,8 +148,7 @@ public class CodegenBinding {
             @NotNull BindingTrace trace,
             @NotNull ClassDescriptor classDescriptor,
             @Nullable ClassDescriptor enclosing,
-            @NotNull Type asmType,
-            @NotNull JvmFileClassesProvider fileClassesManager
+            @NotNull Type asmType
     ) {
         KtElement element = (KtElement) DescriptorToSourceUtils.descriptorToDeclaration(classDescriptor);
         assert element != null : "No source element for " + classDescriptor;
@@ -225,41 +222,5 @@ public class CodegenBinding {
         Type type = bindingContext.get(ASM_TYPE, klass);
         assert type != null : "Type is not yet recorded for " + klass;
         return type;
-    }
-
-    @NotNull
-    public static Collection<ClassDescriptor> getAllInnerClasses(
-            @NotNull BindingContext bindingContext, @NotNull ClassDescriptor outermostClass
-    ) {
-        Collection<ClassDescriptor> innerClasses = bindingContext.get(INNER_CLASSES, outermostClass);
-        if (innerClasses == null || innerClasses.isEmpty()) return Collections.emptySet();
-
-        Set<ClassDescriptor> allInnerClasses = new HashSet<>();
-
-        Deque<ClassDescriptor> stack = new ArrayDeque<>(innerClasses);
-        do {
-            ClassDescriptor currentClass = stack.pop();
-            if (allInnerClasses.add(currentClass)) {
-                Collection<ClassDescriptor> nextClasses = bindingContext.get(INNER_CLASSES, currentClass);
-                if (nextClasses != null) {
-                    for (ClassDescriptor nextClass : nextClasses) {
-                        stack.push(nextClass);
-                    }
-                }
-            }
-        }
-        while (!stack.isEmpty());
-
-        return allInnerClasses;
-    }
-
-    @NotNull
-    public static VariableDescriptor getDelegatedLocalVariableMetadata(
-            @NotNull VariableDescriptor variableDescriptor,
-            @NotNull BindingContext bindingContext
-    ) {
-        VariableDescriptor metadataVariableDescriptor = bindingContext.get(LOCAL_VARIABLE_PROPERTY_METADATA, variableDescriptor);
-        assert metadataVariableDescriptor != null : "Metadata for local delegated property should be not null: " + variableDescriptor;
-        return metadataVariableDescriptor;
     }
 }

@@ -42,7 +42,6 @@ import org.jetbrains.kotlin.fileClasses.FileClasses;
 import org.jetbrains.kotlin.fileClasses.JvmFileClassInfo;
 import org.jetbrains.kotlin.fileClasses.JvmFileClassUtil;
 import org.jetbrains.kotlin.fileClasses.JvmFileClassesProvider;
-import org.jetbrains.kotlin.ir.descriptors.IrBuiltinsPackageFragmentDescriptor;
 import org.jetbrains.kotlin.load.java.BuiltinMethodsWithSpecialGenericSignature;
 import org.jetbrains.kotlin.load.java.BuiltinMethodsWithSpecialGenericSignature.SpecialSignatureInfo;
 import org.jetbrains.kotlin.load.java.JvmAbi;
@@ -236,6 +235,7 @@ public class KotlinTypeMapper {
             if (facadeFqName != null) return facadeFqName;
         }
 
+        // TODO: drop this usage and move IrBuiltinsPackageFragmentDescriptor to IR modules; it shouldn't be used here
         if (descriptor.getContainingDeclaration() instanceof IrBuiltinsPackageFragmentDescriptor) {
             return descriptor.getContainingDeclaration().getName().asString();
         }
@@ -1410,11 +1410,11 @@ public class KotlinTypeMapper {
                 Type sharedVarType = getSharedVarType(variableDescriptor);
                 if (sharedVarType == null) {
                     if (isDelegatedLocalVariable(variableDescriptor)) {
-                        VariableDescriptor delegateVariableDescriptor = bindingContext.get(LOCAL_VARIABLE_DELEGATE,
-                                                                                           (VariableDescriptor) variableDescriptor);
-                        assert delegateVariableDescriptor != null :
-                                "Local delegated property " + variableDescriptor + " delegate descriptor should be not null";
-                        sharedVarType = mapType(delegateVariableDescriptor.getType());
+                        //noinspection CastConflictsWithInstanceof
+                        KotlinType delegateType =
+                                JvmCodegenUtil.getPropertyDelegateType((LocalVariableDescriptor) variableDescriptor, bindingContext);
+                        assert delegateType != null : "Local delegated property type should not be null: " + variableDescriptor;
+                        sharedVarType = mapType(delegateType);
                     }
                     else {
                         sharedVarType = mapType(((VariableDescriptor) variableDescriptor).getType());

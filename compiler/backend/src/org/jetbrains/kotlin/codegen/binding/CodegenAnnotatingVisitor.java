@@ -34,8 +34,6 @@ import org.jetbrains.kotlin.codegen.when.SwitchCodegenUtil;
 import org.jetbrains.kotlin.codegen.when.WhenByEnumsMapping;
 import org.jetbrains.kotlin.coroutines.CoroutineUtilKt;
 import org.jetbrains.kotlin.descriptors.*;
-import org.jetbrains.kotlin.descriptors.annotations.Annotations;
-import org.jetbrains.kotlin.descriptors.impl.LocalVariableDescriptor;
 import org.jetbrains.kotlin.fileClasses.FileClasses;
 import org.jetbrains.kotlin.fileClasses.JvmFileClassesProvider;
 import org.jetbrains.kotlin.load.java.descriptors.SamConstructorDescriptor;
@@ -53,7 +51,6 @@ import org.jetbrains.kotlin.resolve.calls.model.ResolvedValueArgument;
 import org.jetbrains.kotlin.resolve.constants.ConstantValue;
 import org.jetbrains.kotlin.resolve.constants.EnumValue;
 import org.jetbrains.kotlin.resolve.constants.NullValue;
-import org.jetbrains.kotlin.resolve.descriptorUtil.DescriptorUtilsKt;
 import org.jetbrains.kotlin.types.KotlinType;
 import org.jetbrains.org.objectweb.asm.Type;
 
@@ -370,36 +367,7 @@ class CodegenAnnotatingVisitor extends KtVisitorVoid {
 
     @NotNull
     private MutableClosure recordClosure(@NotNull ClassDescriptor classDescriptor, @NotNull String name) {
-        return CodegenBinding.recordClosure(
-                bindingTrace, classDescriptor, peekFromStack(classStack), Type.getObjectType(name), fileClassesProvider
-        );
-    }
-
-    private void recordLocalVariablePropertyMetadata(LocalVariableDescriptor variableDescriptor) {
-        KotlinType delegateType = JvmCodegenUtil.getPropertyDelegateType(variableDescriptor, bindingContext);
-        if (delegateType == null) return;
-
-        LocalVariableDescriptor delegateVariableDescriptor = new LocalVariableDescriptor(
-                variableDescriptor.getContainingDeclaration(),
-                Annotations.Companion.getEMPTY(),
-                variableDescriptor.getName(),
-                delegateType,
-                false,
-                false,
-                SourceElement.NO_SOURCE
-        );
-        bindingTrace.record(LOCAL_VARIABLE_DELEGATE, variableDescriptor, delegateVariableDescriptor);
-
-        LocalVariableDescriptor metadataVariableDescriptor = new LocalVariableDescriptor(
-                variableDescriptor.getContainingDeclaration(),
-                Annotations.Companion.getEMPTY(),
-                Name.identifier(variableDescriptor.getName().asString() + "$metadata"),
-                ReflectionTypes.Companion.createKPropertyStarType(DescriptorUtilsKt.getModule(variableDescriptor)),
-                false,
-                false,
-                SourceElement.NO_SOURCE
-        );
-        bindingTrace.record(LOCAL_VARIABLE_PROPERTY_METADATA, variableDescriptor, metadataVariableDescriptor);
+        return CodegenBinding.recordClosure(bindingTrace, classDescriptor, peekFromStack(classStack), Type.getObjectType(name));
     }
 
     @Override
@@ -407,10 +375,6 @@ class CodegenAnnotatingVisitor extends KtVisitorVoid {
         DeclarationDescriptor descriptor = bindingContext.get(DECLARATION_TO_DESCRIPTOR, property);
         // working around a problem with shallow analysis
         if (descriptor == null) return;
-
-        if (descriptor instanceof LocalVariableDescriptor) {
-            recordLocalVariablePropertyMetadata((LocalVariableDescriptor) descriptor);
-        }
 
         String nameForClassOrPackageMember = getNameForClassOrPackageMember(descriptor);
         if (nameForClassOrPackageMember != null) {
@@ -428,10 +392,33 @@ class CodegenAnnotatingVisitor extends KtVisitorVoid {
                     runtimeTypes.getSupertypeForPropertyReference(variableDescriptor, variableDescriptor.isVar(), /* bound = */ false);
             ClassDescriptor classDescriptor = recordClassForCallable(delegate, variableDescriptor, Collections.singleton(supertype), name);
             recordClosure(classDescriptor, name);
+
+            Type containerType = getMetadataOwner(property);
+            List<VariableDescriptorWithAccessors> descriptors = bindingTrace.get(DELEGATED_PROPERTIES, containerType);
+            if (descriptors == null) {
+                descriptors = new ArrayList<>(1);
+                bindingTrace.record(DELEGATED_PROPERTIES, containerType, descriptors);
+            }
+            descriptors.add(variableDescriptor);
+
+            bindingTrace.record(DELEGATED_PROPERTY_METADATA_OWNER, variableDescriptor, containerType);
         }
 
         super.visitProperty(property);
         nameStack.pop();
+    }
+
+    @NotNull
+    private Type getMetadataOwner(@NotNull KtProperty property) {
+        for (int i = classStack.size() - 1; i >= 0; i--) {
+            ClassDescriptor descriptor = classStack.get(i);
+            if (!(descriptor instanceof SyntheticClassDescriptorForLambda)) {
+                // The first "real" containing class (not a synthetic class for lambda) is the owner of the delegated property metadata
+                return CodegenBinding.getAsmType(bindingContext, descriptor);
+            }
+        }
+
+        return Type.getObjectType(FileClasses.getFileClassInternalName(fileClassesProvider, property.getContainingKtFile()));
     }
 
     @Override

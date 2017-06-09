@@ -24,6 +24,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.kotlin.backend.common.CodegenUtil;
 import org.jetbrains.kotlin.codegen.annotation.AnnotatedSimple;
+import org.jetbrains.kotlin.codegen.binding.CodegenBinding;
 import org.jetbrains.kotlin.codegen.context.*;
 import org.jetbrains.kotlin.codegen.inline.*;
 import org.jetbrains.kotlin.codegen.serialization.JvmSerializerExtension;
@@ -32,6 +33,7 @@ import org.jetbrains.kotlin.codegen.state.KotlinTypeMapper;
 import org.jetbrains.kotlin.descriptors.*;
 import org.jetbrains.kotlin.descriptors.annotations.AnnotationUseSiteTarget;
 import org.jetbrains.kotlin.descriptors.annotations.Annotations;
+import org.jetbrains.kotlin.descriptors.impl.LocalVariableDescriptor;
 import org.jetbrains.kotlin.descriptors.impl.SimpleFunctionDescriptorImpl;
 import org.jetbrains.kotlin.fileClasses.FileClasses;
 import org.jetbrains.kotlin.fileClasses.JvmFileClassesProvider;
@@ -44,8 +46,8 @@ import org.jetbrains.kotlin.name.SpecialNames;
 import org.jetbrains.kotlin.psi.*;
 import org.jetbrains.kotlin.psi.synthetics.SyntheticClassOrObjectDescriptor;
 import org.jetbrains.kotlin.resolve.BindingContext;
-import org.jetbrains.kotlin.resolve.BindingContextUtils;
 import org.jetbrains.kotlin.resolve.DescriptorToSourceUtils;
+import org.jetbrains.kotlin.resolve.DescriptorUtils;
 import org.jetbrains.kotlin.resolve.calls.model.ResolvedCall;
 import org.jetbrains.kotlin.resolve.constants.ConstantValue;
 import org.jetbrains.kotlin.resolve.descriptorUtil.DescriptorUtilsKt;
@@ -66,7 +68,10 @@ import org.jetbrains.org.objectweb.asm.Type;
 import org.jetbrains.org.objectweb.asm.commons.InstructionAdapter;
 import org.jetbrains.org.objectweb.asm.commons.Method;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
 
 import static org.jetbrains.kotlin.codegen.AsmUtil.*;
 import static org.jetbrains.kotlin.codegen.JvmCodegenUtil.isJvm8InterfaceWithDefaultsMember;
@@ -510,11 +515,8 @@ public abstract class MemberCodegen<T extends KtPureElement/* TODO: & KtDeclarat
 
         StackValue provideDelegateReceiver = codegen.gen(initializer);
 
-        int indexOfDelegatedProperty = PropertyCodegen.indexOfDelegatedProperty(property);
-
-        StackValue delegateValue = PropertyCodegen.invokeDelegatedPropertyConventionMethodWithReceiver(
-                codegen, typeMapper, provideDelegateResolvedCall, indexOfDelegatedProperty, 1,
-                provideDelegateReceiver, propertyDescriptor
+        StackValue delegateValue = PropertyCodegen.invokeDelegatedPropertyConventionMethod(
+                codegen, provideDelegateResolvedCall, provideDelegateReceiver, propertyDescriptor
         );
 
         propValue.store(delegateValue, codegen.v);
@@ -594,16 +596,8 @@ public abstract class MemberCodegen<T extends KtPureElement/* TODO: & KtDeclarat
     }
 
     protected void generatePropertyMetadataArrayFieldIfNeeded(@NotNull Type thisAsmType) {
-        List<KtProperty> delegatedProperties = new ArrayList<>();
-        for (KtDeclaration declaration : ((KtDeclarationContainer) element).getDeclarations()) {
-            if (declaration instanceof KtProperty) {
-                KtProperty property = (KtProperty) declaration;
-                if (property.hasDelegate()) {
-                    delegatedProperties.add(property);
-                }
-            }
-        }
-        if (delegatedProperties.isEmpty()) return;
+        List<VariableDescriptorWithAccessors> delegatedProperties = bindingContext.get(CodegenBinding.DELEGATED_PROPERTIES, thisAsmType);
+        if (delegatedProperties == null || delegatedProperties.isEmpty()) return;
 
         v.newField(NO_ORIGIN, ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC, JvmAbi.DELEGATED_PROPERTIES_ARRAY_NAME,
                    "[" + K_PROPERTY_TYPE, null, null);
@@ -615,8 +609,7 @@ public abstract class MemberCodegen<T extends KtPureElement/* TODO: & KtDeclarat
         iv.newarray(K_PROPERTY_TYPE);
 
         for (int i = 0, size = delegatedProperties.size(); i < size; i++) {
-            PropertyDescriptor property =
-                    (PropertyDescriptor) BindingContextUtils.getNotNull(bindingContext, VARIABLE, delegatedProperties.get(i));
+            VariableDescriptorWithAccessors property = delegatedProperties.get(i);
 
             iv.dup();
             iv.iconst(i);
@@ -627,9 +620,9 @@ public abstract class MemberCodegen<T extends KtPureElement/* TODO: & KtDeclarat
             iv.anew(implType);
             iv.dup();
             // TODO: generate the container once and save to a local field instead (KT-10495)
-            ClosureCodegen.generateCallableReferenceDeclarationContainer(iv, property, state);
+            generatePropertyContainer(iv, property);
             iv.aconst(property.getName().asString());
-            PropertyReferenceCodegen.generateCallableReferenceSignature(iv, property, state);
+            generatePropertySignature(iv, property);
             iv.invokespecial(
                     implType.getInternalName(), "<init>",
                     Type.getMethodDescriptor(Type.VOID_TYPE, K_DECLARATION_CONTAINER_TYPE, JAVA_STRING_TYPE, JAVA_STRING_TYPE), false
@@ -643,6 +636,44 @@ public abstract class MemberCodegen<T extends KtPureElement/* TODO: & KtDeclarat
         }
 
         iv.putstatic(thisAsmType.getInternalName(), JvmAbi.DELEGATED_PROPERTIES_ARRAY_NAME, "[" + K_PROPERTY_TYPE);
+    }
+
+    private void generatePropertySignature(@NotNull InstructionAdapter iv, @NotNull VariableDescriptorWithAccessors property) {
+        if (property instanceof LocalVariableDescriptor) {
+            Type asmType = Type.getObjectType(getClassName());
+            List<VariableDescriptorWithAccessors> allDelegatedProperties = bindingContext.get(CodegenBinding.DELEGATED_PROPERTIES, asmType);
+            int index = allDelegatedProperties == null ? -1 : allDelegatedProperties.indexOf(property);
+            if (index < 0) {
+                throw new AssertionError("Local delegated property is not found in " + asmType + ": " + property);
+            }
+
+            // TODO: invent a more stable naming scheme
+            iv.aconst("<local#" + index + ">");
+        }
+        else {
+            PropertyReferenceCodegen.generateCallableReferenceSignature(iv, property, state);
+        }
+    }
+
+    private void generatePropertyContainer(@NotNull InstructionAdapter iv, @NotNull VariableDescriptorWithAccessors property) {
+        if (property instanceof LocalVariableDescriptor) {
+            Type asmType = Type.getObjectType(getClassName());
+            iv.aconst(asmType);
+
+            // TODO: this seems rather ad-hoc, maybe record the necessary information in CodegenAnnotatingVisitor as well?
+            if (DescriptorUtils.getParentOfType(property, ClassDescriptor.class) != null) {
+                wrapJavaClassIntoKClass(iv);
+            }
+            else {
+                // TODO: this is incorrect module name, see ClosureCodegen.generateCallableReferenceDeclarationContainer
+                iv.aconst(state.getModuleName());
+                iv.invokestatic(REFLECTION, "getOrCreateKotlinPackage",
+                                Type.getMethodDescriptor(K_DECLARATION_CONTAINER_TYPE, getType(Class.class), getType(String.class)), false);
+            }
+        }
+        else {
+            ClosureCodegen.generateCallableReferenceDeclarationContainer(iv, property, state);
+        }
     }
 
     public String getClassName() {

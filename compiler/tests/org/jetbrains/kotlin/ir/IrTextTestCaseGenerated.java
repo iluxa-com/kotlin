@@ -158,6 +158,12 @@ public class IrTextTestCaseGenerated extends AbstractIrTextTestCase {
             doTest(fileName);
         }
 
+        @TestMetadata("lambdaInDataClassDefaultParameter.kt")
+        public void testLambdaInDataClassDefaultParameter() throws Exception {
+            String fileName = KotlinTestUtils.navigationMetadata("compiler/testData/ir/irText/classes/lambdaInDataClassDefaultParameter.kt");
+            doTest(fileName);
+        }
+
         @TestMetadata("localClasses.kt")
         public void testLocalClasses() throws Exception {
             String fileName = KotlinTestUtils.navigationMetadata("compiler/testData/ir/irText/classes/localClasses.kt");
@@ -459,6 +465,12 @@ public class IrTextTestCaseGenerated extends AbstractIrTextTestCase {
     public static class Expressions extends AbstractIrTextTestCase {
         public void testAllFilesPresentInExpressions() throws Exception {
             KotlinTestUtils.assertAllTestsPresentByMetadata(this.getClass(), new File("compiler/testData/ir/irText/expressions"), Pattern.compile("^(.+)\\.kt$"), TargetBackend.ANY, true);
+        }
+
+        @TestMetadata("argumentMappedWithError.kt")
+        public void testArgumentMappedWithError() throws Exception {
+            String fileName = KotlinTestUtils.navigationMetadata("compiler/testData/ir/irText/expressions/argumentMappedWithError.kt");
+            doTest(fileName);
         }
 
         @TestMetadata("arrayAccess.kt")

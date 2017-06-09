@@ -21,7 +21,10 @@ import com.intellij.psi.PsiElement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.kotlin.codegen.annotation.AnnotatedWithFakeAnnotations;
-import org.jetbrains.kotlin.codegen.context.*;
+import org.jetbrains.kotlin.codegen.context.CodegenContextUtil;
+import org.jetbrains.kotlin.codegen.context.FieldOwnerContext;
+import org.jetbrains.kotlin.codegen.context.MultifileClassFacadeContext;
+import org.jetbrains.kotlin.codegen.context.MultifileClassPartContext;
 import org.jetbrains.kotlin.codegen.state.GenerationState;
 import org.jetbrains.kotlin.codegen.state.KotlinTypeMapper;
 import org.jetbrains.kotlin.descriptors.*;
@@ -32,7 +35,6 @@ import org.jetbrains.kotlin.descriptors.annotations.Annotations;
 import org.jetbrains.kotlin.fileClasses.JvmFileClassUtilKt;
 import org.jetbrains.kotlin.load.java.JvmAbi;
 import org.jetbrains.kotlin.psi.*;
-import org.jetbrains.kotlin.psi.psiUtil.PsiUtilsKt;
 import org.jetbrains.kotlin.resolve.BindingContext;
 import org.jetbrains.kotlin.resolve.DescriptorFactory;
 import org.jetbrains.kotlin.resolve.DescriptorToSourceUtils;
@@ -60,6 +62,8 @@ import static org.jetbrains.kotlin.codegen.AsmUtil.getDeprecatedAccessFlag;
 import static org.jetbrains.kotlin.codegen.AsmUtil.getVisibilityForBackingField;
 import static org.jetbrains.kotlin.codegen.JvmCodegenUtil.isConstOrHasJvmFieldAnnotation;
 import static org.jetbrains.kotlin.codegen.JvmCodegenUtil.isJvmInterface;
+import static org.jetbrains.kotlin.codegen.binding.CodegenBinding.DELEGATED_PROPERTIES;
+import static org.jetbrains.kotlin.codegen.binding.CodegenBinding.DELEGATED_PROPERTY_METADATA_OWNER;
 import static org.jetbrains.kotlin.codegen.serialization.JvmSerializationBindings.FIELD_FOR_PROPERTY;
 import static org.jetbrains.kotlin.codegen.serialization.JvmSerializationBindings.SYNTHETIC_METHOD_FOR_PROPERTY;
 import static org.jetbrains.kotlin.resolve.DescriptorUtils.isCompanionObject;
@@ -478,7 +482,7 @@ public class PropertyCodegen {
         FunctionGenerationStrategy strategy;
         if (accessor == null || !accessor.hasBody()) {
             if (p instanceof KtProperty && ((KtProperty) p).hasDelegate()) {
-                strategy = new DelegatedPropertyAccessorStrategy(state, accessorDescriptor, indexOfDelegatedProperty((KtProperty) p));
+                strategy = new DelegatedPropertyAccessorStrategy(state, accessorDescriptor);
             }
             else {
                 strategy = new DefaultPropertyAccessorStrategy(state, accessorDescriptor);
@@ -491,39 +495,9 @@ public class PropertyCodegen {
         functionCodegen.generateMethod(JvmDeclarationOriginKt.OtherOrigin(accessor != null ? accessor : p, accessorDescriptor), accessorDescriptor, strategy);
     }
 
-    public static int indexOfDelegatedProperty(@NotNull KtProperty property) {
-        PsiElement parent = property.getParent();
-        KtDeclarationContainer container;
-        if (parent instanceof KtClassBody) {
-            container = ((KtClassOrObject) parent.getParent());
-        }
-        else if (parent instanceof KtFile) {
-            container = (KtFile) parent;
-        }
-        else if (KtPsiUtil.isScriptDeclaration(property)) {
-            container = KtPsiUtil.getScript(property);
-            assert  container != null : "Script declaration for property '" + property.getText() + "' should be not null!";
-        }
-        else {
-            throw new UnsupportedOperationException("Unknown delegated property container: " + parent);
-        }
-
-        int index = 0;
-        for (KtDeclaration declaration : container.getDeclarations()) {
-            if (declaration instanceof KtProperty && ((KtProperty) declaration).hasDelegate()) {
-                if (declaration == property) {
-                    return index;
-                }
-                index++;
-            }
-        }
-
-        throw new IllegalStateException("Delegated property not found in its parent: " + PsiUtilsKt.getElementTextWithContext(property));
-    }
-
-
     private static class DefaultPropertyAccessorStrategy extends FunctionGenerationStrategy.CodegenBased {
         private final PropertyAccessorDescriptor propertyAccessorDescriptor;
+
         public DefaultPropertyAccessorStrategy(@NotNull GenerationState state, @NotNull PropertyAccessorDescriptor descriptor) {
             super(state);
             propertyAccessorDescriptor = descriptor;
@@ -561,75 +535,45 @@ public class PropertyCodegen {
     }
 
     public static StackValue invokeDelegatedPropertyConventionMethod(
-            @NotNull PropertyDescriptor propertyDescriptor,
             @NotNull ExpressionCodegen codegen,
-            @NotNull KotlinTypeMapper typeMapper,
             @NotNull ResolvedCall<FunctionDescriptor> resolvedCall,
-            int indexInPropertyMetadataArray,
-            int propertyMetadataArgumentIndex
-    ) {
-        StackValue.Property receiver = codegen.intermediateValueForProperty(propertyDescriptor, true, null, StackValue.LOCAL_0);
-        return invokeDelegatedPropertyConventionMethodWithReceiver(
-                codegen, typeMapper, resolvedCall, indexInPropertyMetadataArray, propertyMetadataArgumentIndex,
-                receiver, propertyDescriptor
-        );
-    }
-
-    public static StackValue invokeDelegatedPropertyConventionMethodWithReceiver(
-            @NotNull ExpressionCodegen codegen,
-            @NotNull KotlinTypeMapper typeMapper,
-            @NotNull ResolvedCall<FunctionDescriptor> resolvedCall,
-            int indexInPropertyMetadataArray,
-            int propertyMetadataArgumentIndex,
             @Nullable StackValue receiver,
             @NotNull PropertyDescriptor propertyDescriptor
     ) {
-        Type owner = JvmAbi.isPropertyWithBackingFieldInOuterClass(propertyDescriptor) ?
-                     codegen.getState().getTypeMapper().mapOwner(propertyDescriptor) :
-                     getDelegatedPropertyMetadataOwner(codegen, typeMapper);
-
         codegen.tempVariables.put(
-                resolvedCall.getCall().getValueArguments().get(propertyMetadataArgumentIndex).asElement(),
-                new StackValue(K_PROPERTY_TYPE) {
-                    @Override
-                    public void putSelector(@NotNull Type type, @NotNull InstructionAdapter v) {
-                        Field array = StackValue.field(
-                                Type.getType("[" + K_PROPERTY_TYPE), owner, JvmAbi.DELEGATED_PROPERTIES_ARRAY_NAME, true, StackValue.none()
-                        );
-                        StackValue.arrayElement(
-                                K_PROPERTY_TYPE, array, StackValue.constant(indexInPropertyMetadataArray, Type.INT_TYPE)
-                        ).put(type, v);
-                    }
-                }
+                resolvedCall.getCall().getValueArguments().get(1).asElement(),
+                getDelegatedPropertyMetadata(propertyDescriptor, codegen.getBindingContext())
         );
 
         return codegen.invokeFunction(resolvedCall, receiver);
     }
 
-    private static Type getDelegatedPropertyMetadataOwner(@NotNull ExpressionCodegen codegen, @NotNull KotlinTypeMapper typeMapper) {
-        CodegenContext<? extends ClassOrPackageFragmentDescriptor> ownerContext = codegen.getContext().getClassOrPackageParentContext();
-        if (ownerContext instanceof ClassContext) {
-            return typeMapper.mapClass(((ClassContext) ownerContext).getContextDescriptor());
+    @NotNull
+    public static StackValue getDelegatedPropertyMetadata(
+            @NotNull VariableDescriptorWithAccessors descriptor,
+            @NotNull BindingContext bindingContext
+    ) {
+        Type owner = bindingContext.get(DELEGATED_PROPERTY_METADATA_OWNER, descriptor);
+        assert owner != null : "Delegated property owner not found: " + descriptor;
+
+        List<VariableDescriptorWithAccessors> allDelegatedProperties = bindingContext.get(DELEGATED_PROPERTIES, owner);
+        int index = allDelegatedProperties == null ? -1 : allDelegatedProperties.indexOf(descriptor);
+        if (index < 0) {
+            throw new AssertionError("Delegated property not found in " + owner + ": " + descriptor);
         }
-        else if (ownerContext instanceof PackageContext) {
-            return ((PackageContext) ownerContext).getPackagePartType();
-        }
-        else if (ownerContext instanceof MultifileClassContextBase) {
-            return ((MultifileClassContextBase) ownerContext).getFilePartType();
-        }
-        else {
-            throw new UnsupportedOperationException("Unknown context: " + ownerContext);
-        }
+
+        StackValue.Field array = StackValue.field(
+                Type.getType("[" + K_PROPERTY_TYPE), owner, JvmAbi.DELEGATED_PROPERTIES_ARRAY_NAME, true, StackValue.none()
+        );
+        return StackValue.arrayElement(K_PROPERTY_TYPE, array, StackValue.constant(index, Type.INT_TYPE));
     }
 
     private static class DelegatedPropertyAccessorStrategy extends FunctionGenerationStrategy.CodegenBased {
-        private final int index;
         private final PropertyAccessorDescriptor propertyAccessorDescriptor;
 
-        public DelegatedPropertyAccessorStrategy(@NotNull GenerationState state, @NotNull PropertyAccessorDescriptor descriptor, int index) {
+        public DelegatedPropertyAccessorStrategy(@NotNull GenerationState state, @NotNull PropertyAccessorDescriptor descriptor) {
             super(state);
-            this.index = index;
-            propertyAccessorDescriptor = descriptor;
+            this.propertyAccessorDescriptor = descriptor;
         }
 
         @Override
@@ -641,8 +585,9 @@ public class PropertyCodegen {
                     bindingContext.get(BindingContext.DELEGATED_PROPERTY_RESOLVED_CALL, propertyAccessorDescriptor);
             assert resolvedCall != null : "Resolve call should be recorded for delegate call " + signature.toString();
 
-            StackValue lastValue = invokeDelegatedPropertyConventionMethod(propertyAccessorDescriptor.getCorrespondingProperty(),
-                                                                           codegen, state.getTypeMapper(), resolvedCall, index, 1);
+            PropertyDescriptor propertyDescriptor = propertyAccessorDescriptor.getCorrespondingProperty();
+            StackValue.Property receiver = codegen.intermediateValueForProperty(propertyDescriptor, true, null, StackValue.LOCAL_0);
+            StackValue lastValue = invokeDelegatedPropertyConventionMethod(codegen, resolvedCall, receiver, propertyDescriptor);
             Type asmType = signature.getReturnType();
             lastValue.put(asmType, v);
             v.areturn(asmType);
