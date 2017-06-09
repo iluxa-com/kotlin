@@ -214,12 +214,21 @@ abstract class AbstractKotlinEvaluateExpressionTest : KotlinDebuggerTestBase() {
                 tree,
                 {
                     try {
-                        Printer(config).printTree(tree)
+                        ApplicationManager.getApplication().executeOnPooledThread {
+                            runReadAction {
+                                Printer(config).printTree(tree)
+                            }
+                        }
 
                         for (extra in getExtraVars()) {
                             watchesView.addWatchExpression(XExpressionImpl.fromText(extra.text), -1, false)
                         }
-                        Printer(config).printTree(watchesView.tree)
+
+                        ApplicationManager.getApplication().executeOnPooledThread {
+                            runReadAction {
+                                Printer(config).printTree(watchesView.tree)
+                            }
+                        }
                     }
                     finally {
                         resume(this)

@@ -48,7 +48,7 @@ fun PsiFile.findElementsByCommentPrefix(prefix: String): Map<PsiElement, String>
                                     comment,
                                     PsiWhiteSpace::class.java, PsiComment::class.java, KtPackageDirective::class.java
                             )
-                        } as? PsiElement ?: return
+                        } ?: return
 
                         result = result.plus(elementToAdd, commentText.substring(prefix.length).trim())
                     }
@@ -58,17 +58,21 @@ fun PsiFile.findElementsByCommentPrefix(prefix: String): Map<PsiElement, String>
     return result
 }
 
-fun lastModificationDate(dir: File): Long {
+fun dirLastModificationFile(dir: File, skipFile: (File) -> Boolean): File {
     var lastModified: Long = -1L
+    var lastModifiedFile: File? = null
 
     FileUtil.processFilesRecursively(dir) { file ->
-        val fileModified = file.lastModified()
-        if (fileModified > lastModified) {
-            lastModified = fileModified
+        if (!skipFile(file)) {
+            val fileModified = file.lastModified()
+            if (fileModified > lastModified) {
+                lastModified = fileModified
+                lastModifiedFile = file
+            }
         }
 
         true
     }
 
-    return lastModified
+    return lastModifiedFile!!
 }

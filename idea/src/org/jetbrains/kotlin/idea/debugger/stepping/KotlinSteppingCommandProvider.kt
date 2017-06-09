@@ -35,11 +35,11 @@ import org.jetbrains.kotlin.builtins.isFunctionType
 import org.jetbrains.kotlin.codegen.inline.KOTLIN_STRATA_NAME
 import org.jetbrains.kotlin.descriptors.CallableDescriptor
 import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
+import org.jetbrains.kotlin.descriptors.FunctionDescriptor
 import org.jetbrains.kotlin.idea.caches.resolve.analyze
 import org.jetbrains.kotlin.idea.caches.resolve.resolveToDescriptor
 import org.jetbrains.kotlin.idea.codeInsight.CodeInsightUtils
-import org.jetbrains.kotlin.idea.debugger.DebuggerUtils
-import org.jetbrains.kotlin.idea.debugger.ktLocationInfo
+import org.jetbrains.kotlin.idea.debugger.*
 import org.jetbrains.kotlin.idea.debugger.stepping.DexBytecode.GOTO
 import org.jetbrains.kotlin.idea.debugger.stepping.DexBytecode.MOVE
 import org.jetbrains.kotlin.idea.debugger.stepping.DexBytecode.RETURN
@@ -89,9 +89,18 @@ class KotlinSteppingCommandProvider : JvmSteppingCommandProvider() {
             sourcePosition: SourcePosition): DebugProcessImpl.ResumeCommand? {
         val kotlinSourcePosition = KotlinSourcePosition.create(sourcePosition) ?: return null
 
-        if (!isSpecialStepOverNeeded(kotlinSourcePosition)) return null
+        if (isSpecialStepOverNeeded(kotlinSourcePosition)) {
+            return DebuggerSteppingHelper.createStepOverCommand(suspendContext, ignoreBreakpoints, kotlinSourcePosition)
+        }
 
-        return DebuggerSteppingHelper.createStepOverCommand(suspendContext, ignoreBreakpoints, kotlinSourcePosition)
+        val file = sourcePosition.elementAt.containingFile
+        val location = suspendContext.debugProcess.invokeInManagerThread { suspendContext.frameProxy?.location() } ?: return null
+        if (isInSuspendMethod(location) && !isOnSuspendReturnOrReenter(location) && !isLastLocationInMethod(location)) {
+            return DebugProcessImplHelper.createStepOverCommandWithCustomFilter(
+                    suspendContext, ignoreBreakpoints, KotlinSuspendCallStepOverFilter(sourcePosition.line, file))
+        }
+
+        return null
     }
 
     data class KotlinSourcePosition(val file: KtFile, val function: KtNamedFunction,
@@ -225,6 +234,17 @@ private fun getInlineFunctionCallsIfAny(sourcePosition: SourcePosition): List<Kt
     return findCallsOnPosition(sourcePosition, ::isInlineCall)
 }
 
+private fun getSuspendFunctionCallsIfAny(sourcePosition: SourcePosition): List<KtCallExpression> {
+    fun isSuspendCall(expr: KtCallExpression): Boolean {
+        val context = expr.analyze(BodyResolveMode.PARTIAL)
+        val resolvedCall = expr.getResolvedCall(context) ?: return false
+        val functionDescriptor = resolvedCall.resultingDescriptor as? FunctionDescriptor ?: return false
+        return functionDescriptor.isSuspend
+    }
+
+    return findCallsOnPosition(sourcePosition, ::isSuspendCall)
+}
+
 private fun findCallsOnPosition(sourcePosition: SourcePosition, filter: (KtCallExpression) -> Boolean): List<KtCallExpression> {
     val file = sourcePosition.file as? KtFile ?: return emptyList()
     val lineNumber = sourcePosition.line
@@ -302,6 +322,14 @@ fun getStepOverAction(
         frameProxy: StackFrameProxyImpl,
         isDexDebug: Boolean
 ): Action {
+//    val suspendCalls: List<KtCallExpression> = runReadAction {
+//        getSuspendFunctionCallsIfAny(kotlinSourcePosition.sourcePosition)
+//    }
+
+//    if (suspendCalls.isNotEmpty()) {
+//        return getStepOverSuspendAction(location, kotlinSourcePosition.file, kotlinSourcePosition.linesRange, suspendCalls)
+//    }
+
     val inlineArgumentsToSkip = runReadAction {
         getInlineCallFunctionArgumentsIfAny(kotlinSourcePosition.sourcePosition)
     }
@@ -309,6 +337,51 @@ fun getStepOverAction(
     return getStepOverAction(location, kotlinSourcePosition.file, kotlinSourcePosition.linesRange,
                              inlineArgumentsToSkip, frameProxy, isDexDebug)
 }
+
+//fun getStepOverSuspendAction(location: Location,
+//                             sourceFile: KtFile,
+//                             range: IntRange,
+//                             calls: List<KtCallExpression>): Action {
+//    val computedReferenceType = location.declaringType() ?: return Action.STEP_OVER()
+//
+//    fun isLocationSuitable(nextLocation: Location): Boolean {
+//        if (nextLocation.method() != location.method() || nextLocation.lineNumber() !in range) {
+//            return false
+//        }
+//
+//        return try {
+//            nextLocation.sourceName("Kotlin") == sourceFile.name
+//        }
+//        catch(e: AbsentInformationException) {
+//            return true
+//        }
+//    }
+//
+//    val locations = computedReferenceType.allLineLocations()
+//            .dropWhile { it != location }
+//            .drop(1)
+//            .filter(::isLocationSuitable)
+//            .dropWhile { it.lineNumber() == location.lineNumber() }
+//
+//    for (locationAtLine in locations) {
+//        val xPosition = runReadAction l@ {
+//            val lineNumber = locationAtLine.lineNumber()
+//            val lineStartOffset = sourceFile.getLineStartOffset(lineNumber - 1) ?: return@l null
+//            if (calls.any { it.textRange.contains(lineStartOffset) }) return@l null
+//
+//            if (locationAtLine.lineNumber() == location.lineNumber()) return@l null
+//
+//            val elementAt = sourceFile.findElementAt(lineStartOffset) ?: return@l null
+//            XSourcePositionImpl.createByElement(elementAt)
+//        }
+//
+//        if (xPosition != null) {
+//            return Action.RUN_TO_CURSOR(xPosition)
+//        }
+//    }
+//
+//    return Action.STEP_OVER()
+//}
 
 fun getStepOverAction(
         location: Location,

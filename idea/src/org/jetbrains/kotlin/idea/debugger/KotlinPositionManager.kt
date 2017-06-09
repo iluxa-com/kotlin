@@ -41,8 +41,10 @@ import org.jetbrains.kotlin.idea.codeInsight.CodeInsightUtils
 import org.jetbrains.kotlin.idea.debugger.breakpoints.getLambdasAtLineIfAny
 import org.jetbrains.kotlin.idea.debugger.evaluate.KotlinCodeFragmentFactory
 import org.jetbrains.kotlin.idea.debugger.evaluate.KotlinDebuggerCaches
+import org.jetbrains.kotlin.idea.debugger.stepping.tada
 import org.jetbrains.kotlin.idea.decompiler.classFile.KtClsFile
 import org.jetbrains.kotlin.idea.refactoring.getLineCount
+import org.jetbrains.kotlin.idea.refactoring.getLineEndOffset
 import org.jetbrains.kotlin.idea.refactoring.getLineStartOffset
 import org.jetbrains.kotlin.idea.stubindex.KotlinSourceFilterScope
 import org.jetbrains.kotlin.idea.util.ProjectRootsUtil
@@ -257,6 +259,14 @@ class KotlinPositionManager(private val myDebugProcess: DebugProcess) : MultiReq
                 if (!inlineLocations.isEmpty()) {
                     return inlineLocations
                 }
+            }
+
+            fun isSuspendLocationRequest(position: SourcePosition): Boolean {
+                return position.file.getLineEndOffset(position.line) == position.offset
+            }
+
+            if (isSuspendLocationRequest(position) || tada.get()) {
+                return listOf(type.methodsByName("doResume").first().allLineLocations()[1])
             }
 
             val line = position.line + 1

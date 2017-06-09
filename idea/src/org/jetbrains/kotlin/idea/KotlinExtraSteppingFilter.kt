@@ -23,6 +23,7 @@ import com.intellij.debugger.settings.DebuggerSettings
 import com.sun.jdi.Location
 import com.sun.jdi.request.StepRequest
 import org.jetbrains.kotlin.idea.debugger.KotlinPositionManager
+import org.jetbrains.kotlin.idea.debugger.isOnSuspendReturnOrReenter
 import org.jetbrains.kotlin.idea.util.application.runReadAction
 
 class KotlinExtraSteppingFilter : ExtraSteppingFilter {
@@ -53,6 +54,17 @@ class KotlinExtraSteppingFilter : ExtraSteppingFilter {
                 catch(e: NoDataException) {
                     return false
                 } ?: return false
+
+        if (isOnSuspendReturnOrReenter(location)) {
+            val allLineLocations = location.method().allLineLocations()
+            val firstLine = allLineLocations.firstOrNull()?.lineNumber()
+            val lastLine = allLineLocations.lastOrNull()?.lineNumber()
+
+            // Ignore one-line suspend functions
+            if (firstLine != null && firstLine != lastLine) {
+                return true
+            }
+        }
 
         val settings = DebuggerSettings.getInstance()
         if (settings.TRACING_FILTERS_ENABLED) {

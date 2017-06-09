@@ -17,12 +17,14 @@
 package org.jetbrains.kotlin.idea.debugger
 
 import com.intellij.debugger.engine.DebugProcessImpl
+import com.intellij.debugger.engine.DebuggerManagerThreadImpl
 import com.intellij.debugger.engine.events.DebuggerCommandImpl
 import com.intellij.debugger.impl.DebuggerContextImpl
 import com.intellij.debugger.jdi.LocalVariableProxyImpl
 import com.sun.jdi.*
 import com.sun.tools.jdi.LocalVariableImpl
 import org.jetbrains.kotlin.codegen.binding.CodegenBinding
+import org.jetbrains.kotlin.codegen.coroutines.DO_RESUME_METHOD_NAME
 import org.jetbrains.kotlin.idea.debugger.evaluate.KotlinDebuggerCaches
 import org.jetbrains.kotlin.idea.util.application.runReadAction
 import org.jetbrains.kotlin.load.java.JvmAbi
@@ -54,13 +56,21 @@ fun isInsideInlineArgument(inlineArgument: KtFunction, location: Location, debug
     } != null
 }
 
-fun <T: Any> DebugProcessImpl.invokeInManagerThread(f: (DebuggerContextImpl) -> T?): T? {
+fun <T : Any> DebugProcessImpl.invokeInManagerThread(f: (DebuggerContextImpl) -> T?): T? {
     var result: T? = null
-    managerThread.invokeAndWait(object : DebuggerCommandImpl() {
+    val command: DebuggerCommandImpl = object : DebuggerCommandImpl() {
         override fun action() {
             result = runReadAction { f(debuggerContext) }
         }
-    })
+    }
+
+    when {
+        DebuggerManagerThreadImpl.isManagerThread() ->
+            managerThread.invoke(command)
+        else ->
+            managerThread.invokeAndWait(command)
+    }
+
     return result
 }
 
@@ -136,4 +146,23 @@ private class MockStackFrame(private val location: Location, private val vm: Vir
 
     override fun getArgumentValues(): List<Value> = emptyList()
     override fun virtualMachine() = vm
+}
+
+fun isInSuspendMethod(location: Location): Boolean {
+    val method = location.method()
+    val signature = method.signature()
+
+    return signature.contains("Lkotlin/coroutines/experimental/Continuation;") ||
+           (method.name() == DO_RESUME_METHOD_NAME && signature == "(Ljava/lang/Object;Ljava/lang/Throwable;)Ljava/lang/Object;")
+}
+
+fun isOnSuspendReturnOrReenter(location: Location): Boolean {
+    if (!isInSuspendMethod(location)) {
+        return false
+    }
+    return location.method().allLineLocations().firstOrNull()?.lineNumber() == location.lineNumber()
+}
+
+fun isLastLocationInMethod(location: Location): Boolean {
+    return location.method().allLineLocations().lastOrNull()?.lineNumber() == location.lineNumber()
 }
